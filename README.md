@@ -11,3 +11,8 @@ but I was playing new vegas and wondered about optimal blackjack stuff. so take 
 even if finding successors is hard or the rules are different than a typical minmax or dykstra. Do not however feel that
 this is how I plan to document all code I do. (this may be more or less relevent as time goes on and I do not update the
  readme)
+ 
+ 
+ 
+ #TODO: 
+ - fix how aces work in the hit chances thing. 

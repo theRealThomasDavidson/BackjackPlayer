@@ -1,5 +1,7 @@
 import random
 import copy
+import json
+import datetime
 
 suits = ("C", "D", "S", "H")
 numbers = {"A": 11, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "t": 10, "J": 10, "Q": 10, "K": 10}
@@ -180,6 +182,77 @@ class Dealer:
             printstring += " " + str(card)
         print(printstring, self.total)
 
+    def playpct(self, playerscore, deck):
+        """
+        this method is to see what the percentage chance that the dealer beats a particular score this will be based on
+        hit til 16, hit soft 17, ties are even not losses.
+        :param playerscore: this is the number that the player has on the table
+        :param deck: is a dict in the form {"cardsleft": int, "valuesleft":{1:int, 2:int, ...10:int} this will be the
+        deck that is left over
+        :return: a float that reflects the propotion (between 0 and 1) of games where the player wins minus the proportion
+        when they  lose. This should give a number between -1 and 1 always.
+        ####TESTING####
+        2019 8 24
+        appears to be working had a problem for a bit with shallow copies instead of deep copies but appears to work now.
+        parameters:
+        I basically made dealers with the first 12 cards drawn from a size 6 deck. (might be more rigorous if this
+        doesn't appear to work)
+        I asked each of them to do this procedure with 12,14(both under any dealer stop so they should report the same
+        numbers.) and 17,18,19,20, and 21. with each of my test cases the first 2 win rates were appropriately the
+        lowest and repeated for 12 and 14. the other win rates were each larger than the last one.
+
+        all reported winnings were between -1 and 1.
+        ###############
+        """
+        total = 0.
+        fringe = [(self.faceup.value, self.faceup.value == 11, 1., deck)]
+        while fringe:
+            currval, soft, currprop, currdeck = fringe.pop()
+            if currval >= 17:
+                if currval > 21:
+                    if soft:
+                        fringe.append((currval-10, False, currprop, currdeck))
+                        continue
+                    else:
+                        total += currprop
+                        continue
+                if currval == 17 and soft:
+                    for cardval in currdeck["valuesleft"]:
+                        if not currdeck["valuesleft"][cardval]:
+                            continue
+                        newprop = currprop * currdeck["valuesleft"][cardval] / currdeck["cardsleft"]
+                        newval = currval + cardval - ((cardval == 11) * 10)
+                        newdeck = copy.deepcopy(deck)
+                        newdeck["cardsleft"] -= 1
+                        newdeck["valuesleft"][cardval] -= 1
+                        fringe.append((newval, True, newprop, newdeck))
+                        continue
+                    continue
+                if currval > playerscore:
+                    total -= currprop
+                    continue
+                elif currval < playerscore:
+                    total += currprop
+                    continue
+                else:
+                    continue
+            for cardval in currdeck["valuesleft"]:
+                if not currdeck["valuesleft"][cardval]:
+                    continue
+                newprop = currprop * currdeck["valuesleft"][cardval] / currdeck["cardsleft"]
+                newval = currval + cardval
+                newdeck = copy.deepcopy(deck)
+                newdeck["cardsleft"] -= 1
+                newdeck["valuesleft"][cardval] -= 1
+                fringe.append((newval, soft or cardval == 11, newprop, newdeck))
+        return total
+    def surrenderpct(self):
+        """
+        this is just a method so that the odds calculations are consistent in calling methods this just
+        returns the payout of a surrender for your first move.
+        :return: a float equal to -0.5
+        """
+        return -0.5
 class Player:
     def __init__(self, deck, dealer, card1=False, card2=False):
         self.deck = deck
@@ -193,6 +266,16 @@ class Player:
                      10*int(self.cards[0].value == 11 and self.cards[1].value == 11)
         self.blackjack = not self.total - 21
 
+    def hit(self):
+        newcard = self.deck.draw()
+        self.cards = tuple(list(self.cards) + [newcard])
+        self.total += newcard.value
+        if self.total > 21:
+            for card in self.cards:
+                if card.value == 11:
+                    card.value = 1
+                    self.total -= 10
+        return None
 
     def getstatespace(self):
         dealer = self.dealer
@@ -202,75 +285,90 @@ class Player:
         self.dealposs = dealer_space(dealscore, cardsleft, workvals)
 
     def stayodds(self):
-        dealer = self.dealer
-        dealposs = self.dealposs
-        if self.blackjack:
-            odds = 1
-            if dealer.cards[0].value == 10:
-                odds -= (self.deck.valuesleft[11]/self.deck.cardsleft)
-            elif dealer.cards[0].value == 11:
-                odds -= (self.deck.valuesleft[10]/self.deck.cardsleft)
-            return odds * bjPays
-        payout = 0
-        winodds= 0
-        for state in dealposs:
-            if state[0] < self.total:
-                winodds += dealposs[state]*2
-            elif state[0] == self.total:
-                winodds += dealposs[state]
-        return winodds
+        """
+        this gives the payout from -1 to 1 of staying at a given gamestate. it uses the expectimax from the dealers
+        playpct method.
+        :param self.cards: this is the cards that are already in the players hands and will be used to get the players
+        current score
+        :param self.dealer: this is the dealer and must be used to ge the playpct payout for the player.
+        :return: will return the payout as a float between -1 and 1.
+
+        ####TESTING####
+        appears to work done along with playpct and will return the value expected with both 2 and 3 card draws.totals
+        under 17 will give the same odds as a playpcty that is under 17, from 17 to 21 they appear to give the same odds
+        as their corresponding score and for values over 21 they give -1.
+        ###############
+        """
+        soft = False
+        score = 0
+        for card in self.cards:
+            val = card.value
+            if val == 11:
+                if not soft:
+                    soft = True
+                else:
+                    val = 1
+            score += val
+        if score > 21 and soft:
+            score -= 10
+        if score > 21:
+            return -1.
+        else:
+            deck = {"cardsleft": self.deck.cardsleft, "valuesleft":copy.deepcopy(self.deck.valuesleft)}
+            return self.dealer.playpct(score, deck)
 
     def hitodds(self):
-        if self.blackjack:
-            return 0 #not worring about this we all know to stay on backjack it's a lowe payout for a lower odds of winning.
-        dealer, dealposs, currscore = self.dealer, self.dealposs, self.total
-        prob = 0
-        for item in dealposs:
-            dealscore, cardposs = getscoreanddeckfromhashable(item)
-            totcards = sum(cardposs.values())
-            ##here we start a stocastic graph traversal to figure out who wins
-            fringe = [(currscore, cardposs, totcards, dealposs[item])]
-            ###items are (playerscore, dealer score, card dictionary, int of all cards, state probability)
-            while fringe:
-                playscore, carddict, totcards, stateprob = fringe.pop()
-                for card in cardposs:
-                    newscore = card + playscore
-                    if newscore > 21:
-                        continue
-                    newprob = cardposs[card]/totcards * stateprob
-                    if newscore > dealscore:
-                        prob += newprob * 2
-                        continue
-                    if newscore == dealscore:
-                        ##will figure this out later for a decision but most of the time that you have the same value
-                        # as a dealer with a viable number then you probably have better odds not hitting.
-                        prob += newprob
-                        continue
-                    ##if there was no exit case then you add your item to the fringe.
-                    carddict[card] -= 1
-                    fringe.append((newscore, carddict, totcards-1, newprob))
-
+        """
+        this method should give the odds of hitting recursively.
+        :param self.cards: this is the cards that are already in the players hands and will be used to get the players
+        current
+        :return:
+        """
         return prob
 
 
 
 def main():
-
-
+    start = datetime.datetime.now()
 
     this = Deck(6)
-    totwins = 0
-    for iii in range(0, 90):
-        print(iii)
+    for iii in range (1,15):
         deal = Dealer(this)
         play = Player(this, deal)
-        play.getstatespace()
-        temp = play.stayodds()
-        new = play.hitodds()
-        print("Cards in play player:", play.cards[0], play.cards[1],"\nDealer:", deal.faceup, "\nStay odds:", temp, "hitodds", new)
-        totwins += max(temp,new)
-    print("average payout:", totwins/90)
+        play.hit()
+        print("plyercards:", tuple(str(card) for card in play.cards))
+        print("player odds:", play.stayodds())
+        print("dealer card:", deal.faceup)
+        deck = {"cardsleft": this.cardsleft, "valuesleft": this.valuesleft}
+        print("with 14 player gets:", deal.playpct(14, deck))
+        print("with 17 player gets:", deal.playpct(17, deck))
+        print("with 18 player gets:", deal.playpct(18, deck))
+        print("with 19 player gets:", deal.playpct(19, deck))
+        print("with 20 player gets:", deal.playpct(20, deck))
+        print("with 21 player gets:", deal.playpct(21, deck))
 
+    print(datetime.datetime.now() - start)
+    """
+    payoutlist = []
 
-if __name__ =="__main__":
+    for jjj in range(400):
+        this = Deck(6)
+        totwins = 0
+        for iii in range(0, 90):
+            #print(iii)
+            deal = Dealer(this)
+            play = Player(this, deal)
+            play.getstatespace()
+            temp = play.stayodds()
+            new = play.hitodds()
+            #print("Cards in play player:", play.cards[0], play.cards[1],"\nDealer:", deal.faceup, "\nStay odds:", temp, "hitodds", new)
+            #if max(temp, new) > 2.5:
+            #    raise Exception
+            totwins += max(temp, new)
+        #print("average payout:", totwins/90)
+        payoutlist.append(totwins/90)
+        print("Deck", jjj, "finished.")
+    json.dump({"payoutlists":payoutlist}, open("400deckspayouts.json","w"))
+    """
+if __name__ == "__main__":
     main()
