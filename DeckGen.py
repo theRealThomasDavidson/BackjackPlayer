@@ -5,7 +5,7 @@ import datetime
 
 suits = ("C", "D", "S", "H")
 numbers = {"A": 11, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "t": 10, "J": 10, "Q": 10, "K": 10}
-bjPays = 2.5
+bjPays = 1.5
 def dealer_space(dealscore, cardsleft, workvals):
     """
     this will define what states the dealer can be in after it plays through as it would a hit on soft 17 (insurence is
@@ -284,7 +284,7 @@ class Player:
         cardsleft = self.deck.cardsleft
         self.dealposs = dealer_space(dealscore, cardsleft, workvals)
 
-    def stayodds(self):
+    def stayOdds(self):
         """
         this gives the payout from -1 to 1 of staying at a given gamestate. it uses the expectimax from the dealers
         playpct method.
@@ -314,17 +314,130 @@ class Player:
         if score > 21:
             return -1.
         else:
-            deck = {"cardsleft": self.deck.cardsleft, "valuesleft":copy.deepcopy(self.deck.valuesleft)}
+            deck = {"cardsleft": copy.copy(self.deck.cardsleft), "valuesleft":copy.deepcopy(self.deck.valuesleft)}
             return self.dealer.playpct(score, deck)
 
-    def hitodds(self):
+    def doubleOdds(self):
         """
-        this method should give the odds of hitting recursively.
+        this will return the payout on doubleing down.
+        :return: the payout for doubling down (not that bets are doubled here so your payout range is between -2 and 2
+        of your original bet.
+
+        ####TESTING####
+        went through debugging and it seems to work fine. the below dealer hit threshold seems to work fine and I think
+        that should speed it up a bit, but look in the future for better uses of cyles here.
+        ###############
+        ##TODO: make it so we only have to calculate the score once before we add the new cards
+        """
+
+        payout = 0
+        deck = {"cardsleft": copy.copy(self.deck.cardsleft), "valuesleft": copy.deepcopy(self.deck.valuesleft)}
+        belowhit = 0.
+        for newcard in deck["valuesleft"]:
+            prob = self.deck.valuesleft[newcard]/self.deck.cardsleft
+            soft = newcard == 11
+            score = newcard
+            for card in self.cards:
+                val = card.value
+                if val == 11:
+                    if not soft:
+                        soft = True
+                    else:
+                        val = 1
+                score += val
+            if score > 21 and soft:
+                score -= 10
+            if score > 21:
+                payout -= prob
+            elif score < 17:
+                belowhit += prob
+            else:
+                payout += self.dealer.playpct(score, deck) * prob
+        payout += belowhit * self.dealer.playpct(11, deck)
+        return payout*2
+    def hitOdds(self):
+        """
+        this method should give the odds of hitting recursively(using while loop instead because using expetimax.
+        it should also return "hit" or "stay" if hitting or staying
         :param self.cards: this is the cards that are already in the players hands and will be used to get the players
         current
-        :return:
+        :param self.deck.cardsleft: this is an int that shows how many cards are in the deck
+        :param self.deck.valuesleft: this is a dict of the form {2:int, 3: int,...,11:int}that shows how many cards of
+        each value are left in the deck, with 11 being the ace.
+        :return: a tuple of tghe form (float, str) where the float is the winning payout of the current condition given
+        ideal play(between -1 and 1), and the string is either "hit" or "stay" or "bust" based on what ideal play dictates.
         """
-        return prob
+        soft = False
+        score = 0
+        for card in self.cards:
+            val = card.value
+            if val == 11:
+                if not soft:
+                    soft = True
+                else:
+                    val = 1
+            score += val
+        if score > 21:
+            if soft:
+                score -= 10
+                soft = False
+            else:
+                return "Bust", -1.
+        play = "stay"
+        deck = {"cardsleft": copy.copy(self.deck.cardsleft), "valuesleft": copy.deepcopy(self.deck.valuesleft)}
+        prob = self.stayOdds()
+        hitprob = 0.
+        fringe = [(score, soft, deck, 1., prob)]
+        while fringe:
+            currscore, soft,  currdeck, stateprob, stayprob = fringe.pop()
+            newHitProb = 0.
+            if currscore > 21 and soft:
+                currscore -= 10
+                soft = False
+            if currscore > 21:
+                hitprob -= stateprob
+                continue
+            if currscore == 21:
+                hitprob += stayprob
+                continue
+            drawnCardStates = []
+            for card in [11, 2, 3, 4, 5, 6, 7, 8, 9, 10]: #this is changed because of how soft bids workdeck["valuesleft"]:
+                if not deck["valuesleft"][card]:
+                    continue
+                newscore = currscore + card
+                newStateProb = stateprob * deck["valuesleft"][card] / deck["cardsleft"]
+                newSoft = soft
+                if soft:
+                    if card == 11:
+                        newscore -= 10
+                    elif newscore > 21:
+                        newscore -= 10
+                        newSoft = False
+                elif card == 11:
+                    if newscore > 21:
+                        newscore -= 10
+                    else:
+                        newSoft = True
+                if newscore > 21:
+                    newHitProb -= newStateProb
+                newDeck = deck = {"cardsleft": copy.copy(self.deck.cardsleft), "valuesleft": copy.deepcopy(self.deck.valuesleft)}
+                newDeck["valuesleft"][card] -= 1
+                newDeck["cardsleft"] -= 1
+                newStay = self.dealer.playpct(newscore, newDeck) * newStateProb
+                newHitProb += newStay * newStateProb
+                drawnCardStates.append((newscore, newSoft, newDeck, newStateProb, newStay))
+
+            ####
+            #basically I can expalin this by you never want to queue up two hits as being more likely to win
+            #if the first one is not more likely to win.
+            if newHitProb >= stayprob:
+                fringe += drawnCardStates
+            else:
+                hitprob += stayprob
+
+        if hitprob > prob:
+            return "hit", hitprob
+        return "stay", prob
 
 
 
@@ -335,17 +448,18 @@ def main():
     for iii in range (1,15):
         deal = Dealer(this)
         play = Player(this, deal)
-        play.hit()
         print("plyercards:", tuple(str(card) for card in play.cards))
-        print("player odds:", play.stayodds())
         print("dealer card:", deal.faceup)
+        print("player odds:", play.stayOdds())
+        print("player double down odds:", play.doubleOdds())
+        print("player hit odds:", play.hitOdds())
         deck = {"cardsleft": this.cardsleft, "valuesleft": this.valuesleft}
         print("with 14 player gets:", deal.playpct(14, deck))
         print("with 17 player gets:", deal.playpct(17, deck))
         print("with 18 player gets:", deal.playpct(18, deck))
         print("with 19 player gets:", deal.playpct(19, deck))
         print("with 20 player gets:", deal.playpct(20, deck))
-        print("with 21 player gets:", deal.playpct(21, deck))
+        print("with 21 player gets:", deal.playpct(21, deck),"\n")
 
     print(datetime.datetime.now() - start)
     """
